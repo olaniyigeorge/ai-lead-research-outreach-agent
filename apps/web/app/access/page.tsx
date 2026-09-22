@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Alert } from "@/components/Alert";
 import { AppShell } from "@/components/AppShell";
 import { Spinner } from "@/components/Spinner";
 import { AllowedActorOut, ApiError, api, getSession } from "@/lib/api-client";
@@ -189,7 +190,7 @@ export default function AccessPage() {
             {busy ? "Granting..." : "Grant access"}
           </button>
 
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          {error && <Alert message={error} />}
         </form>
 
         <div className="mt-8">
