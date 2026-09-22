@@ -9,7 +9,7 @@ from apps.api.agent.stages.sanity_check import sanity_check_objective
 from apps.api.agent.usage import record_usage
 from apps.api.agent.validation import looks_like_gibberish
 from apps.api.config import get_settings
-from apps.api.db.models import ICPCriteria, Run, UsageRecord
+from apps.api.db.models import ICPCriteria, Run, ToolCallLog, UsageRecord
 from apps.api.services.rate_limit import is_rate_limited, record_rejection
 
 
@@ -63,6 +63,7 @@ async def create_run(db: Session, supabase_user_id: uuid.UUID, objective: str) -
 
     icp = ICPCriteria(run_id=run.id, version=1, **refinement.icp)
     run.status = "awaiting_icp_confirmation"
+    run.selected_icp_version = 1
     db.add(icp)
     db.commit()
     db.refresh(run)
@@ -94,13 +95,66 @@ def get_owned_run(db: Session, run_id: uuid.UUID, supabase_user_id: uuid.UUID) -
     return run
 
 
+def list_tool_call_logs(db: Session, run_id: uuid.UUID) -> list[ToolCallLog]:
+    return (
+        db.query(ToolCallLog)
+        .filter(ToolCallLog.run_id == run_id)
+        .order_by(ToolCallLog.created_at.asc())
+        .all()
+    )
+
+
 def latest_icp(db: Session, run_id: uuid.UUID) -> ICPCriteria | None:
+    """Highest `version` number for this run -- used to number the *next*
+    version on an edit, not necessarily what the run is currently using (see
+    `selected_icp` for that)."""
     return (
         db.query(ICPCriteria)
         .filter(ICPCriteria.run_id == run_id)
         .order_by(ICPCriteria.version.desc())
         .first()
     )
+
+
+def selected_icp(db: Session, run: Run) -> ICPCriteria | None:
+    """The version a run is actually using -- `run.selected_icp_version`,
+    which may point at an older version than `latest_icp`."""
+    return (
+        db.query(ICPCriteria)
+        .filter(ICPCriteria.run_id == run.id, ICPCriteria.version == run.selected_icp_version)
+        .first()
+    )
+
+
+def list_icp_versions(db: Session, run_id: uuid.UUID) -> list[ICPCriteria]:
+    return (
+        db.query(ICPCriteria)
+        .filter(ICPCriteria.run_id == run_id)
+        .order_by(ICPCriteria.version.asc())
+        .all()
+    )
+
+
+_ICP_SELECTABLE_STATUSES = ("draft", "awaiting_icp_confirmation")
+
+
+def select_icp_version(db: Session, run: Run, version: int) -> ICPCriteria:
+    if run.status not in _ICP_SELECTABLE_STATUSES:
+        raise HTTPException(
+            status_code=409, detail="This run's target profile is already confirmed and can no longer be changed"
+        )
+    target = (
+        db.query(ICPCriteria)
+        .filter(ICPCriteria.run_id == run.id, ICPCriteria.version == version)
+        .first()
+    )
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"Version {version} does not exist for this run")
+
+    run.selected_icp_version = version
+    db.commit()
+    db.refresh(target)
+    return target
 
 
 def update_icp(
@@ -110,9 +164,15 @@ def update_icp(
     confirm: bool,
     overrides: dict,
 ) -> ICPCriteria:
-    current = latest_icp(db, run.id)
+    if run.status not in _ICP_SELECTABLE_STATUSES:
+        raise HTTPException(
+            status_code=409, detail="This run's target profile is already confirmed and can no longer be changed"
+        )
+
+    current = selected_icp(db, run)
     if current is None:
         raise HTTPException(status_code=409, detail="Run has no ICP to update yet")
+    latest = latest_icp(db, run.id)
 
     hard_cap = get_settings().lead_count_hard_cap
     clamped_lead_count = min(lead_count, hard_cap)
@@ -136,7 +196,7 @@ def update_icp(
 
     new_version = ICPCriteria(
         run_id=run.id,
-        version=current.version + 1,
+        version=latest.version + 1,
         confirmed=confirm,
         **fields,
     )
@@ -144,6 +204,8 @@ def update_icp(
     run.status = "queued" if confirm else "awaiting_icp_confirmation"
 
     db.add(new_version)
+    db.flush()
+    run.selected_icp_version = new_version.version
     db.commit()
     db.refresh(new_version)
     return new_version
