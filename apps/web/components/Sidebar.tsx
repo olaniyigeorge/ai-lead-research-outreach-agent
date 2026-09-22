@@ -94,9 +94,9 @@ export function Sidebar() {
         </nav>
       </div>
 
-      <div className="border-t border-surface-border p-4">
+      <div className="border-t border-surface-border  p-4 ">
         <div className="flex items-center gap-2.5">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface-card-hover text-xs font-semibold text-foreground">
+          <div className="flex h-8 w-8 shadow p-2 shrink-0 items-center rounded-full bg-surface-card-hover text-xs font-semibold text-foreground">
             {initials}
           </div>
           <div className="min-w-0">
@@ -110,12 +110,14 @@ export function Sidebar() {
           </div>
         </div>
         {email && (
+          <div className="flex w-full items-center justify-end items-end">
           <button
             onClick={logout}
-            className="mt-3 w-full rounded-lg border border-surface-border px-3 py-1.5 text-left text-xs font-medium text-muted-text transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600"
+            className="my-2 w-fit items-end justify-end rounded-lg border border-surface-border px-3 py-1.5 text-left text-xs font-medium text-muted-text transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600"
           >
             Sign out
           </button>
+          </div>
         )}
       </div>
     </aside>
