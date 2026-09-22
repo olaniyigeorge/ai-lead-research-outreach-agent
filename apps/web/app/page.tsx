@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import { Alert } from "@/components/Alert";
 import { AppShell } from "@/components/AppShell";
 import { LoadingLine, Spinner } from "@/components/Spinner";
 import { ApiError, api, getSession } from "@/lib/api-client";
@@ -126,7 +127,7 @@ export default function Home() {
           </ul>
         </div>
 
-        {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
+        {error && <Alert message={error} />}
       </div>
       </div>
     </AppShell>
