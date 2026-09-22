@@ -87,6 +87,9 @@ export const api = {
   getRun: (runId: string) => request<RunOut>(`/runs/${runId}`),
   updateIcp: (runId: string, body: UpdateIcpBody) =>
     request<RunOut>(`/runs/${runId}/icp`, { method: "PATCH", body: JSON.stringify(body) }),
+  selectIcpVersion: (runId: string, version: number) =>
+    request<RunOut>(`/runs/${runId}/icp/select-version`, { method: "PATCH", body: JSON.stringify({ version }) }),
+  startRun: (runId: string) => request<RunOut>(`/runs/${runId}/start`, { method: "POST" }),
   getMe: () => request<Me>("/auth/me"),
   listAllowlist: () => request<AllowedActorOut[]>("/admin/allowlist"),
   createAllowlistEntry: (body: CreateAllowedActorBody) =>
@@ -111,12 +114,23 @@ export type ICPCriteria = {
   confirmed: boolean;
 };
 
+export type Lead = {
+  id: string;
+  company_name: string;
+  company_domain: string;
+  qualification_status: string;
+  source_raw: Record<string, unknown>;
+  created_at: string;
+};
+
 export type RunOut = {
   id: string;
   objective: string;
   status: string;
   lead_count_limit: number | null;
   icp: ICPCriteria | null;
+  icp_versions: ICPCriteria[];
+  leads: Lead[];
   total_claude_cost_usd: number;
 };
 
@@ -131,8 +145,15 @@ export type RunSummary = {
 export type UpdateIcpBody = {
   lead_count: number;
   confirm: boolean;
+  target_company_type?: string;
+  industries?: string[];
+  geography?: string[];
+  headcount_range?: string;
+  buyer_persona?: string;
+  business_problem?: string;
   hard_filters?: string[];
   soft_preferences?: string[];
+  disqualifiers?: string[];
 };
 
 export type Me = {
