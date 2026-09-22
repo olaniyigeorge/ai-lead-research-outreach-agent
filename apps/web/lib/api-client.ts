@@ -1,4 +1,6 @@
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+// `||`, not `??` -- a deploy platform can set this to an empty string
+// rather than leaving it unset, which `??` would not fall back on.
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 const SESSION_STORAGE_KEY = "koya_session";
 const EMAIL_STORAGE_KEY = "koya_user_email";
 
