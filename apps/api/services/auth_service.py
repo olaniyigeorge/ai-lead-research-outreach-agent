@@ -1,3 +1,4 @@
+import logging
 import uuid
 
 from fastapi import HTTPException
@@ -7,6 +8,8 @@ from apps.api.auth.allowlist import is_email_allowed, normalize_email
 from apps.api.auth.jwt import decode_supabase_jwt
 from apps.api.auth.session import start_session
 from apps.api.auth.supabase_client import SupabaseAuthError, request_otp, verify_otp
+
+logger = logging.getLogger(__name__)
 
 
 def request_otp_for_email(db: Session, email: str) -> None:
@@ -38,6 +41,10 @@ def verify_otp_for_email(db: Session, email: str, token: str) -> dict:
         # decode_supabase_jwt() is written for the request-auth path (a bad
         # token there is the caller's fault -> 401); here we're verifying a
         # token Supabase itself just issued, so a decode failure is ours.
+        # decode_supabase_jwt() already logs the underlying PyJWTError --
+        # this just records that it happened during the just-issued-token
+        # path specifically, since that's a backend bug, not a bad client.
+        logger.error("Failed to decode a token Supabase itself just issued for %s", normalized)
         raise HTTPException(status_code=502, detail="Could not verify the issued Supabase token") from exc
 
     supabase_user_id = uuid.UUID(payload["sub"])
