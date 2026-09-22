@@ -8,7 +8,15 @@ from claude_agent_sdk import ResultMessage
 from apps.api.agent.stages.icp import ICPRefinementResult
 from apps.api.agent.stages.sanity_check import SanityCheckResult
 from apps.api.db.models import Run, UsageRecord
-from apps.api.services.run_service import create_run, latest_icp, list_runs, update_icp
+from apps.api.services.run_service import (
+    create_run,
+    latest_icp,
+    list_icp_versions,
+    list_runs,
+    select_icp_version,
+    selected_icp,
+    update_icp,
+)
 from apps.api.tests.test_icp_stage import FIXED_ICP
 
 USER_ID = uuid.uuid4()
@@ -166,6 +174,64 @@ async def test_update_icp_only_advances_to_queued_when_confirmed(db_session):
 
     update_icp(db_session, run, lead_count=10, confirm=True, overrides={})
     assert run.status == "queued"
+
+
+@pytest.mark.asyncio
+async def test_update_icp_appends_version_and_moves_selected_pointer(db_session):
+    with _mocked_agents():
+        run = await create_run(db_session, USER_ID, "Find some SaaS companies please")
+
+    assert run.selected_icp_version == 1
+
+    update_icp(db_session, run, lead_count=10, confirm=False, overrides={"buyer_persona": "Ops lead"})
+
+    assert run.selected_icp_version == 2
+    versions = list_icp_versions(db_session, run.id)
+    assert [v.version for v in versions] == [1, 2]
+    assert selected_icp(db_session, run).buyer_persona == "Ops lead"
+    # v1 is untouched -- append-only history, not a mutation.
+    assert versions[0].buyer_persona == FIXED_ICP["buyer_persona"]
+
+
+@pytest.mark.asyncio
+async def test_select_icp_version_moves_pointer_without_new_row(db_session):
+    with _mocked_agents():
+        run = await create_run(db_session, USER_ID, "Find some SaaS companies please")
+
+    update_icp(db_session, run, lead_count=10, confirm=False, overrides={"buyer_persona": "Ops lead"})
+    assert run.selected_icp_version == 2
+
+    select_icp_version(db_session, run, 1)
+
+    assert run.selected_icp_version == 1
+    assert selected_icp(db_session, run).buyer_persona == FIXED_ICP["buyer_persona"]
+    # No new version was created by selecting -- still just v1 and v2.
+    assert [v.version for v in list_icp_versions(db_session, run.id)] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_select_icp_version_rejects_unknown_version(db_session):
+    with _mocked_agents():
+        run = await create_run(db_session, USER_ID, "Find some SaaS companies please")
+
+    with pytest.raises(Exception) as exc_info:
+        select_icp_version(db_session, run, 99)
+
+    assert getattr(exc_info.value, "status_code", None) == 404
+
+
+@pytest.mark.asyncio
+async def test_select_icp_version_blocked_after_confirmation(db_session):
+    with _mocked_agents():
+        run = await create_run(db_session, USER_ID, "Find some SaaS companies please")
+
+    update_icp(db_session, run, lead_count=10, confirm=False, overrides={"buyer_persona": "Ops lead"})
+    update_icp(db_session, run, lead_count=10, confirm=True, overrides={})
+
+    with pytest.raises(Exception) as exc_info:
+        select_icp_version(db_session, run, 1)
+
+    assert getattr(exc_info.value, "status_code", None) == 409
 
 
 @pytest.mark.asyncio
