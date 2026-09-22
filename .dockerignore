@@ -1,0 +1,12 @@
+.git
+.claude/plans
+.claude/settings*.json
+apps/api/.venv
+apps/api/__pycache__
+apps/api/.pytest_cache
+apps/api/.env
+apps/web/node_modules
+apps/web/.next
+apps/web/.env.local
+docs
+*.md
