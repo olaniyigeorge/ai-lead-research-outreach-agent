@@ -81,15 +81,45 @@ class RunSummaryOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class LeadOut(BaseModel):
+    id: uuid.UUID
+    company_name: str
+    company_domain: str
+    qualification_status: str
+    source_raw: dict
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ToolCallLogOut(BaseModel):
+    id: uuid.UUID
+    stage: str
+    tool_name: str
+    input_summary: dict | None
+    result_summary: dict | None
+    status: str
+    error_message: str | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class RunOut(BaseModel):
     id: uuid.UUID
     objective: str
     status: str
     lead_count_limit: int | None
     icp: ICPCriteriaOut | None = None
+    icp_versions: list[ICPCriteriaOut] = []
+    leads: list[LeadOut] = []
     total_claude_cost_usd: float
 
     model_config = {"from_attributes": True}
+
+
+class SelectICPVersionBody(BaseModel):
+    version: int = Field(ge=1)
 
 
 class UpdateICPBody(BaseModel):
