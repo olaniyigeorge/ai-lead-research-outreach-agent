@@ -1,0 +1,61 @@
+<!--
+  Supabase Auth "Magic Link" email template (Auth -> Email Templates ->
+  Magic Link in the Supabase dashboard). Supabase templates aren't
+  API/CLI-managed, so there's nothing to `apply` here -- paste this file's
+  body into that dashboard field by hand whenever it changes, and set the
+  subject line there too (suggested below). This file just keeps the
+  template under version control and in sync with the access-granted email's
+  styling (apps/api/services/notifications.py).
+
+  Suggested subject: Your Koya Lead Agent sign-in code
+
+  The app's sign-in page only ever asks for the OTP code (apps/web/app/sign-in/page.tsx
+  posts it to POST /auth/verify-otp) -- there's no magic-link click-through
+  route wired up on the frontend, so {{ .ConfirmationURL }} is intentionally
+  left out here rather than shown as a second, dead-end path.
+-->
+<div style="background: #f5f6f5; padding: 32px 16px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width: 480px; margin: 0 auto;">
+    <tr>
+      <td style="padding-bottom: 20px;">
+        <span style="display: inline-block; width: 28px; height: 28px; border-radius: 8px; background: #2563eb; color: #ffffff; font-weight: 700; font-size: 14px; line-height: 28px; text-align: center;">K</span>
+        <span style="margin-left: 8px; font-size: 14px; font-weight: 600; color: #1f2429; vertical-align: middle;">Koya Lead Agent</span>
+      </td>
+    </tr>
+    <tr>
+      <td style="background: #ffffff; border: 1px solid #d8dbd9; border-radius: 16px; padding: 32px;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+          <tr>
+            <td style="font-size: 20px; font-weight: 600; color: #1f2429; padding-bottom: 12px;">
+              Your sign-in code
+            </td>
+          </tr>
+          <tr>
+            <td style="font-size: 14px; line-height: 1.6; color: #1f2429;">
+              Enter this code on the sign-in page to continue. It expires shortly and can only be used once.
+            </td>
+          </tr>
+          <tr>
+            <td style="padding-top: 24px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+                     style="background: #f5f6f5; border: 1px solid #d8dbd9; border-radius: 10px;">
+                <tr>
+                  <td style="padding: 18px 16px; text-align: center;">
+                    <span style="font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 32px; font-weight: 700; letter-spacing: 6px; color: #1f2429;">
+                      {{ .Token }}
+                    </span>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding-top: 16px; font-size: 12px; color: #5c646c;">
+              Didn't request this? You can safely ignore this email.
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</div>
