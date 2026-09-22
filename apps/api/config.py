@@ -34,6 +34,18 @@ class Settings(BaseSettings):
     email_from_name: str = ""
     app_url: str = "http://localhost:3000"
 
+    # Comma-separated list of origins the browser is allowed to call the API
+    # from. Defaults cover local dev + the deployed frontend (per README) so
+    # prod works out of the box, but this is meant to be overridden via the
+    # CORS_ALLOWED_ORIGINS env var on Render, not edited here, since the
+    # origin can change (custom domain, new Vercel project) independently of
+    # a code deploy.
+    cors_allowed_origins: str = "http://localhost:3000,https://ai-lead-research-outreach-agent.vercel.app"
+
+    @property
+    def cors_allowed_origins_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
+
 
 @lru_cache
 def get_settings() -> Settings:
