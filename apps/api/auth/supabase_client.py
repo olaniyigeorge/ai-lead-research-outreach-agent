@@ -18,6 +18,26 @@ class SupabaseAuthError(Exception):
         super().__init__(detail)
 
 
+def _error_detail(resp: httpx.Response) -> str:
+    """Supabase Auth error bodies are JSON like
+
+        {"code":429,"error_code":"over_email_send_rate_limit","msg":"..."}
+
+    -- pull out the human-readable `msg` rather than ever surfacing the raw
+    JSON to a caller (it eventually reaches the frontend as `ApiError.message`
+    and gets rendered directly to the user).
+    """
+    try:
+        body = resp.json()
+    except ValueError:
+        return "Something went wrong. Please try again."
+    if isinstance(body, dict):
+        msg = body.get("msg") or body.get("error_description") or body.get("message")
+        if isinstance(msg, str) and msg.strip():
+            return msg
+    return "Something went wrong. Please try again."
+
+
 def _client() -> httpx.Client:
     settings = get_settings()
     if not settings.supabase_url or not settings.supabase_publishable_key:
@@ -33,7 +53,7 @@ def request_otp(email: str) -> None:
     with _client() as client:
         resp = client.post("/auth/v1/otp", json={"email": email, "create_user": True})
     if resp.status_code >= 400:
-        raise SupabaseAuthError(resp.status_code, resp.text)
+        raise SupabaseAuthError(resp.status_code, _error_detail(resp))
 
 
 def verify_otp(email: str, token: str) -> dict:
@@ -43,5 +63,5 @@ def verify_otp(email: str, token: str) -> dict:
             json={"email": email, "token": token, "type": "email"},
         )
     if resp.status_code >= 400:
-        raise SupabaseAuthError(resp.status_code, resp.text)
+        raise SupabaseAuthError(resp.status_code, _error_detail(resp))
     return resp.json()
