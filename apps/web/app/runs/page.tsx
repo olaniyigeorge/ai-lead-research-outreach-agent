@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
+import { Alert } from "@/components/Alert";
 import { AppShell } from "@/components/AppShell";
 import { RunStatusBadge } from "@/components/RunStatusBadge";
 import { LoadingLine } from "@/components/Spinner";
@@ -56,7 +57,7 @@ export default function RunsPage() {
     return (
       <AppShell>
         <div className="mx-auto max-w-4xl px-4 py-16">
-          <p className="text-sm text-red-600">{error}</p>
+          <Alert message={error} />
         </div>
       </AppShell>
     );
