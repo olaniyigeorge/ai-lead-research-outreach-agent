@@ -12,7 +12,10 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+// `||`, not `??` -- a deploy platform can set this to an empty string
+// rather than leaving it unset, and `??` only falls back on null/undefined,
+// not "". `new URL("")` throws ERR_INVALID_URL and fails the build.
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
 const TITLE = "Koya Lead Agent";
 const DESCRIPTION =
   "AI-powered lead research and outreach agent -- turns a plain-language qualification objective into a reviewable, evidence-backed list of qualified leads and outreach drafts.";
