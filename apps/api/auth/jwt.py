@@ -7,6 +7,7 @@ public keys from its JWKS endpoint, keyed by the `kid` in the token header.
 `PyJWKClient` handles fetching, caching, and kid-matching.
 """
 
+import logging
 from functools import lru_cache
 
 import jwt
@@ -14,6 +15,8 @@ from fastapi import HTTPException
 from jwt import PyJWKClient
 
 from apps.api.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 _SUPPORTED_ALGORITHMS = ["ES256", "RS256"]
 
@@ -39,6 +42,11 @@ def decode_supabase_jwt(token: str) -> dict:
             options={"verify_aud": False},
         )
     except jwt.PyJWTError as exc:
+        # Without this, the real reason (bad signature, wrong kid, expired
+        # exp, unsupported alg, ...) was previously discarded -- the caller
+        # only ever saw the generic HTTPException below, both here and one
+        # layer up in auth_service.py's re-wrap into a 502.
+        logger.exception("Supabase JWT verification failed: %s", exc)
         raise HTTPException(status_code=401, detail="Invalid or expired token") from exc
 
     return payload
