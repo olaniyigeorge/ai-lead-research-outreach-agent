@@ -1,6 +1,6 @@
 "use client";
 
-export type StageStatus = "completed" | "current" | "upcoming";
+export type StageStatus = "completed" | "current" | "running" | "upcoming";
 
 export type Stage = {
   id: string;
@@ -11,12 +11,14 @@ export type Stage = {
 const STATUS_DOT: Record<StageStatus, string> = {
   completed: "bg-emerald-500",
   current: "bg-primary-accent animate-pulse",
+  running: "bg-sky-500 animate-pulse",
   upcoming: "bg-surface-border",
 };
 
 const STATUS_TEXT: Record<StageStatus, string> = {
   completed: "text-foreground",
   current: "text-primary-accent",
+  running: "text-sky-600",
   upcoming: "text-muted-text",
 };
 

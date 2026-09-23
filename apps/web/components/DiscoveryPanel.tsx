@@ -30,6 +30,14 @@ function LeadRow({ lead }: { lead: Lead }) {
           <p className="text-xs text-muted-text">{lead.company_domain}</p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {lead.is_buffer && (
+            <span
+              className="rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-700"
+              title="Spare candidate from the discovery buffer -- not scraped until promoted"
+            >
+              spare
+            </span>
+          )}
           <span
             className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
               STATUS_STYLES[lead.qualification_status] ?? "bg-surface-base text-muted-text"
@@ -93,12 +101,16 @@ export function DiscoveryPanel({ run }: { run: RunOut }) {
     );
   }
 
+  const primaryCount = run.leads.filter((l) => !l.is_buffer).length;
+  const spareCount = run.leads.length - primaryCount;
+
   return (
     <div className="space-y-4">
       <div className="flex items-baseline justify-between gap-3">
         <h1 className="text-2xl font-semibold text-foreground">Discovery</h1>
         <p className="text-xs text-muted-text">
-          {run.leads.length} of {run.lead_count_limit} found
+          {primaryCount} of {run.lead_count_limit} found
+          {spareCount > 0 && ` (+${spareCount} spare)`}
         </p>
       </div>
       {run.status === "running" ? (
@@ -112,13 +124,13 @@ export function DiscoveryPanel({ run }: { run: RunOut }) {
               <LeadRow key={lead.id} lead={lead} />
             ))}
           </div>
-          {run.status === "completed" && (
-            <p className="text-xs text-muted-text">
-              Discovery is done for this run. Scraping (verifying and enriching each candidate) isn&apos;t built
-              yet, so there&apos;s nothing further to trigger here yet -- these {run.leads.length} candidates are
-              as far as the pipeline currently goes.
-            </p>
-          )}
+          {(run.status === "completed" || run.status === "partially_completed" || run.status === "failed") &&
+            run.leads.length > 0 && (
+              <p className="text-xs text-muted-text">
+                Discovery is done for this run -- head to the Scraping tab to verify and enrich these candidates.
+                If you end up short of the target after scraping, come back here to request more.
+              </p>
+            )}
         </>
       )}
     </div>
