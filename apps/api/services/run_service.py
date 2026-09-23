@@ -9,7 +9,7 @@ from apps.api.agent.stages.sanity_check import sanity_check_objective
 from apps.api.agent.usage import record_usage
 from apps.api.agent.validation import looks_like_gibberish
 from apps.api.config import get_settings
-from apps.api.db.models import ICPCriteria, Run, ToolCallLog, UsageRecord
+from apps.api.db.models import ICPCriteria, Lead, Run, ToolCallLog, UsageRecord
 from apps.api.services.rate_limit import is_rate_limited, record_rejection
 
 
@@ -72,11 +72,76 @@ async def create_run(db: Session, supabase_user_id: uuid.UUID, objective: str) -
     return run
 
 
-def total_claude_cost_usd(db: Session, run_id: uuid.UUID) -> float:
+def total_run_cost_usd(db: Session, run_id: uuid.UUID) -> float:
+    """Sums `estimated_cost_usd` across every source (Claude + Apify --
+    Firecrawl rows carry `units`/credits instead and leave this column
+    null, so they contribute 0 here, not an error). This was previously
+    named `total_claude_cost_usd` and mislabeled "Total Claude spend" in the
+    UI even after Apify rows started landing in the same table -- there was
+    never a source filter here, so it was already a run total wearing a
+    Claude-only name."""
     total = db.query(func.coalesce(func.sum(UsageRecord.estimated_cost_usd), 0)).filter(
         UsageRecord.run_id == run_id
     ).scalar()
     return float(total)
+
+
+def apify_spend_so_far(db: Session, run_id: uuid.UUID) -> float:
+    """Cumulative inferred Apify spend across every discovery call this run
+    has made so far (the initial discovery plus any top-ups) -- the budget
+    check a top-up needs before making another discovery call, since
+    `run.max_apify_usd` is meant as a whole-run ceiling, not a per-call one.
+    See discovery_service.top_up_run."""
+    total = (
+        db.query(func.coalesce(func.sum(UsageRecord.estimated_cost_usd), 0))
+        .filter(UsageRecord.run_id == run_id, UsageRecord.source == "apify")
+        .scalar()
+    )
+    return float(total)
+
+
+def claude_cost_by_stage(db: Session, run_id: uuid.UUID) -> dict[str, float]:
+    """Claude spend grouped by stage ('sanity_check', 'icp', 'scraping', ...)
+    for the per-phase cost/summary strip on the run page. Apify/Firecrawl
+    rows live in the same table (see `external_usage_by_stage`) but are
+    excluded here so a mostly-inferred, non-Claude figure never gets summed
+    into what's presented as an actual Claude spend total."""
+    rows = (
+        db.query(UsageRecord.stage, func.sum(UsageRecord.estimated_cost_usd))
+        .filter(UsageRecord.run_id == run_id, UsageRecord.source == "claude")
+        .group_by(UsageRecord.stage)
+        .all()
+    )
+    return {stage: float(cost or 0) for stage, cost in rows}
+
+
+def external_usage_by_stage(db: Session, run_id: uuid.UUID) -> list[dict]:
+    """Apify/Firecrawl spend grouped by (stage, source) -- both are inferred
+    estimates (see integrations/apify_client.py and integrations/scrape_client.py),
+    not exact billing, which is why each row also carries its raw `units`
+    (result count / scrape count) alongside whatever $ estimate could be
+    computed, so the UI can show the units even where a $ figure can't be
+    inferred (Firecrawl credits)."""
+    rows = (
+        db.query(
+            UsageRecord.stage,
+            UsageRecord.source,
+            func.sum(UsageRecord.units),
+            func.sum(UsageRecord.estimated_cost_usd),
+        )
+        .filter(UsageRecord.run_id == run_id, UsageRecord.source != "claude")
+        .group_by(UsageRecord.stage, UsageRecord.source)
+        .all()
+    )
+    return [
+        {
+            "stage": stage,
+            "source": source,
+            "units": int(units or 0),
+            "estimated_cost_usd": float(cost) if cost is not None else None,
+        }
+        for stage, source, units, cost in rows
+    ]
 
 
 def list_runs(db: Session, supabase_user_id: uuid.UUID) -> list[Run]:
@@ -92,6 +157,33 @@ def get_owned_run(db: Session, run_id: uuid.UUID, supabase_user_id: uuid.UUID) -
     run = db.get(Run, run_id)
     if run is None or run.supabase_user_id != supabase_user_id:
         raise HTTPException(status_code=404, detail="Run not found")
+    return run
+
+
+def reset_stuck_run(db: Session, run: Run) -> Run:
+    """Force-unsticks a run whose status is stranded on "running" -- e.g. a
+    stage's request died mid-flight (server restart, crashed process) or two
+    concurrent stage requests raced and left the row in a state neither
+    finalized. Deliberately only allowed from "running": every other status
+    already reflects a stage's own real completion/failure bookkeeping, and
+    clobbering one of those would discard real information for no reason.
+
+    Doesn't try to reconstruct which stage was interrupted or resume it --
+    each panel derives what it can do next from the actual `Lead`/`Run` rows
+    (discovered/scraped/qualified counts, lead_count_limit), not from a
+    stage name baked into `status`. So this only needs to pick a status that
+    unblocks every "not running" / "not queued" gate uniformly:
+    `partially_completed` once any lead exists (whatever stage was
+    interrupted, its own real completion state is exactly the lead rows
+    that made it through -- no data is fabricated), or back to `queued` if
+    discovery never even created one, so "Start discovery" reappears."""
+    if run.status != "running":
+        raise HTTPException(status_code=409, detail="Only a run stuck on \"running\" can be reset")
+
+    has_leads = db.query(Lead).filter(Lead.run_id == run.id).first() is not None
+    run.status = "partially_completed" if has_leads else "queued"
+    db.commit()
+    db.refresh(run)
     return run
 
 
