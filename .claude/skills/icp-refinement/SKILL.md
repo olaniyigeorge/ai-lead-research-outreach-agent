@@ -1,8 +1,7 @@
 ---
 name: icp-refinement
 description: Turn a natural-language lead qualification objective into
-  structured ICP (Ideal Customer Profile) criteria before any company
-  search happens. Used at the start of a Koya Talent lead-research run.
+  structured ICP (Ideal Customer Profile) criteria before any company search happens. Used at the start of a Koya Talent lead-research run.
 ---
 
 # ICP Refinement
