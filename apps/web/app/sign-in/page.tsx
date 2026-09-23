@@ -1,10 +1,12 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Alert } from "@/components/Alert";
 import { Spinner } from "@/components/Spinner";
 import { ApiError, api, saveSession } from "@/lib/api-client";
+
+const OTP_LENGTH = 8;
 
 export default function SignInPage() {
   const router = useRouter();
@@ -13,18 +15,47 @@ export default function SignInPage() {
   const [step, setStep] = useState<"email" | "otp">("email");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const otpInputRef = useRef<HTMLInputElement>(null);
+
+  const [notAllowed, setNotAllowed] = useState(false);
+  const [requestReason, setRequestReason] = useState("");
+  const [requestSent, setRequestSent] = useState(false);
+  const [requestBusy, setRequestBusy] = useState(false);
+  const [requestError, setRequestError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (step === "otp") otpInputRef.current?.focus();
+  }, [step]);
 
   async function handleRequestOtp(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setNotAllowed(false);
     setBusy(true);
     try {
       await api.requestOtp(email);
       setStep("otp");
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Something went wrong");
+      if (err instanceof ApiError && err.status === 403) {
+        setNotAllowed(true);
+      } else {
+        setError(err instanceof ApiError ? err.message : "Something went wrong");
+      }
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleRequestAccess() {
+    setRequestError(null);
+    setRequestBusy(true);
+    try {
+      await api.requestAccess(email, requestReason);
+      setRequestSent(true);
+    } catch (err) {
+      setRequestError(err instanceof ApiError ? err.message : "Something went wrong");
+    } finally {
+      setRequestBusy(false);
     }
   }
 
@@ -33,7 +64,21 @@ export default function SignInPage() {
     setError(null);
     setBusy(true);
     try {
-      const session = await api.verifyOtp(email, otp);
+      let session;
+      try {
+        session = await api.verifyOtp(email, otp);
+      } catch (err) {
+        // The backend already retries a transient JWKS-fetch blip a few
+        // times internally (see apps/api/auth/jwt.py) before giving up with
+        // a 503 -- if it still failed, the OTP code itself is still valid
+        // (Supabase already accepted it), so one more client-side retry
+        // after a short pause covers a slightly longer blip without making
+        // the user re-type an 8-digit code for something that wasn't their
+        // fault.
+        if (!(err instanceof ApiError) || err.status !== 503) throw err;
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        session = await api.verifyOtp(email, otp);
+      }
       saveSession(session, email);
       router.push("/");
     } catch (err) {
@@ -62,7 +107,12 @@ export default function SignInPage() {
                 type="email"
                 required
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  setNotAllowed(false);
+                  setRequestSent(false);
+                  setRequestError(null);
+                }}
                 className="w-full rounded-lg border border-surface-border bg-background px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-primary-accent"
                 placeholder="you@company.com"
               />
@@ -75,26 +125,68 @@ export default function SignInPage() {
               {busy && <Spinner className="text-white" />}
               {busy ? "Sending..." : "Send code"}
             </button>
+
+            {notAllowed && !requestSent && (
+              <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50 p-3.5">
+                <p className="text-xs text-amber-900">
+                  <strong>{email}</strong> doesn&apos;t have access yet. Ask for it below -- an admin will review
+                  your request.
+                </p>
+                <textarea
+                  value={requestReason}
+                  onChange={(e) => setRequestReason(e.target.value)}
+                  placeholder="Why do you need access? (optional)"
+                  rows={2}
+                  className="w-full resize-none rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-primary-accent"
+                />
+                <button
+                  type="button"
+                  onClick={handleRequestAccess}
+                  disabled={requestBusy}
+                  className="flex w-full items-center justify-center gap-2 rounded-lg border border-amber-300 bg-white px-4 py-2 text-sm font-medium text-amber-900 transition-colors hover:bg-amber-100 disabled:opacity-50"
+                >
+                  {requestBusy && <Spinner />}
+                  {requestBusy ? "Requesting..." : "Request access"}
+                </button>
+                {requestError && <p className="text-xs text-red-600">{requestError}</p>}
+              </div>
+            )}
+            {requestSent && (
+              <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-xs text-emerald-900">
+                Request sent -- you&apos;ll be able to sign in once an admin grants access.
+              </p>
+            )}
           </form>
         ) : (
           <form onSubmit={handleVerifyOtp} className="mt-6 space-y-4">
             <div>
-              <label htmlFor="otp" className="mb-1 block text-sm font-medium text-foreground">
-                Code
-              </label>
+              <div className="mb-1 flex items-baseline justify-between">
+                <label htmlFor="otp" className="block text-sm font-medium text-foreground">
+                  Code
+                </label>
+                <span className="text-xs text-muted-text">
+                  {otp.length}/{OTP_LENGTH}
+                </span>
+              </div>
               <input
+                ref={otpInputRef}
                 id="otp"
                 type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                pattern="\d*"
+                maxLength={OTP_LENGTH}
+                minLength={OTP_LENGTH}
                 required
                 value={otp}
-                onChange={(e) => setOtp(e.target.value)}
-                className="w-full rounded-lg border border-surface-border bg-background px-3 py-2 text-sm tracking-widest text-foreground outline-none transition-colors focus:border-primary-accent"
-                placeholder="12345678"
+                onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, OTP_LENGTH))}
+                className="w-full rounded-lg border border-surface-border bg-background px-3 py-3 text-center font-mono text-2xl tracking-[0.5em] text-foreground outline-none transition-colors focus:border-primary-accent"
+                placeholder="00000000"
               />
             </div>
             <button
               type="submit"
-              disabled={busy}
+              disabled={busy || otp.length !== OTP_LENGTH}
               className="glow-primary flex w-full items-center justify-center gap-2 rounded-lg bg-primary-accent px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
             >
               {busy && <Spinner className="text-white" />}
