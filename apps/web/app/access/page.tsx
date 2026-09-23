@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Alert } from "@/components/Alert";
 import { AppShell } from "@/components/AppShell";
 import { Spinner } from "@/components/Spinner";
-import { AllowedActorOut, ApiError, api, getSession } from "@/lib/api-client";
+import { AccessRequestOut, AllowedActorOut, ApiError, api, getSession } from "@/lib/api-client";
 import { useRouter } from "next/navigation";
 
 type GrantMode = "email" | "domain";
@@ -20,8 +20,10 @@ function computeExpiresAt(choice: ExpiryChoice, customValue: string): string | u
 export default function AccessPage() {
   const router = useRouter();
   const [entries, setEntries] = useState<AllowedActorOut[] | null>(null);
+  const [requests, setRequests] = useState<AccessRequestOut[] | null>(null);
   const [notAuthorized, setNotAuthorized] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [decidingId, setDecidingId] = useState<string | null>(null);
 
   const [mode, setMode] = useState<GrantMode>("email");
   const [value, setValue] = useState("");
@@ -43,14 +45,35 @@ export default function AccessPage() {
       });
   }
 
+  function loadRequests() {
+    api
+      .listAccessRequests()
+      .then(setRequests)
+      .catch(() => {}); // not authorized already surfaces via loadEntries; nothing extra to show here
+  }
+
   useEffect(() => {
     if (!getSession()) {
       router.push("/sign-in");
       return;
     }
     loadEntries();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    loadRequests();
   }, [router]);
+
+  async function handleDecideRequest(requestId: string, decision: "granted" | "rejected") {
+    setError(null);
+    setDecidingId(requestId);
+    try {
+      await api.decideAccessRequest(requestId, decision);
+      loadRequests();
+      if (decision === "granted") loadEntries();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Something went wrong");
+    } finally {
+      setDecidingId(null);
+    }
+  }
 
   async function handleGrant(e: React.FormEvent) {
     e.preventDefault();
@@ -193,6 +216,49 @@ export default function AccessPage() {
           {error && <Alert message={error} />}
         </form>
 
+        {requests && requests.length > 0 && (
+          <div className="mt-8">
+            <h2 className="text-sm font-semibold text-foreground">
+              Pending requests <span className="text-muted-text">({requests.length})</span>
+            </h2>
+            <div className="glow-card mt-3 divide-y divide-surface-border overflow-hidden rounded-2xl border border-surface-border bg-surface-card">
+              {requests.map((req) => (
+                <div key={req.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-foreground">{req.email}</p>
+                    <p className="text-xs text-muted-text">
+                      {req.reason || "No reason given"} &middot;{" "}
+                      {new Date(req.created_at).toLocaleString(undefined, {
+                        month: "short",
+                        day: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button
+                      onClick={() => handleDecideRequest(req.id, "rejected")}
+                      disabled={decidingId === req.id}
+                      className="rounded-lg border border-surface-border px-3 py-1.5 text-xs font-medium text-muted-text transition-colors hover:bg-surface-base disabled:opacity-50"
+                    >
+                      Reject
+                    </button>
+                    <button
+                      onClick={() => handleDecideRequest(req.id, "granted")}
+                      disabled={decidingId === req.id}
+                      className="flex items-center gap-1.5 rounded-lg bg-primary-accent px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                    >
+                      {decidingId === req.id && <Spinner className="text-white" />}
+                      Grant
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="mt-8">
           <h2 className="text-sm font-semibold text-foreground">Currently granted</h2>
           {!entries ? (
@@ -200,12 +266,13 @@ export default function AccessPage() {
           ) : entries.length === 0 ? (
             <p className="mt-2 text-sm text-muted-text">No one has been granted access yet.</p>
           ) : (
-            <div className="glow-card mt-3 overflow-hidden rounded-2xl border border-surface-border bg-surface-card">
-              <table className="w-full border-collapse text-left text-sm">
+            <div className="glow-card mt-3 overflow-x-auto rounded-2xl border border-surface-border bg-surface-card">
+              <table className="w-full min-w-[560px] border-collapse text-left text-sm">
                 <thead>
                   <tr className="border-b border-surface-border bg-surface-base text-xs font-semibold uppercase tracking-wide text-muted-text">
                     <th className="px-4 py-3">Who</th>
                     <th className="px-4 py-3">Label</th>
+                    <th className="px-4 py-3">Last login</th>
                     <th className="px-4 py-3">Expires</th>
                     <th className="px-4 py-3 text-right">Actions</th>
                   </tr>
@@ -226,6 +293,17 @@ export default function AccessPage() {
                           )}
                         </td>
                         <td className="px-4 py-3 text-muted-text">{entry.label ?? "—"}</td>
+                        <td className="px-4 py-3 text-muted-text text-xs">
+                          {entry.last_login_at
+                            ? new Date(entry.last_login_at).toLocaleString(undefined, {
+                                month: "short",
+                                day: "numeric",
+                                year: "numeric",
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })
+                            : "Never"}
+                        </td>
                         <td className="px-4 py-3">
                           {entry.expires_at ? (
                             <span className={expired ? "text-red-600" : "text-muted-text"}>
