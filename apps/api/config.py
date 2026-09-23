@@ -16,7 +16,14 @@ class Settings(BaseSettings):
 
     apify_api_token: str = ""
 
+    firecrawl_api_key: str = ""
+
     lead_count_hard_cap: int = 25
+
+    # MVP: homepage only. The architecture doc's `pages_per_company_cap`
+    # (home/about/careers) is a later addition once multi-page scraping
+    # earns its added cost/latency.
+    scrape_pages_per_company: int = 1
 
     # After this many rejected objectives (gibberish or failed sanity check)
     # within the cooldown window, further POST /runs attempts are blocked
