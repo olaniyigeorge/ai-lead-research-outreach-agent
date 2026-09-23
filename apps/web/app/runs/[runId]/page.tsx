@@ -6,12 +6,17 @@ import { Alert } from "@/components/Alert";
 import { AppShell } from "@/components/AppShell";
 import { CriteriaList } from "@/components/CriteriaList";
 import { DiscoveryPanel } from "@/components/DiscoveryPanel";
+import { DraftingPanel } from "@/components/DraftingPanel";
+import { QualificationPanel } from "@/components/QualificationPanel";
 import { EditableCriteriaList } from "@/components/EditableCriteriaList";
 import { EditableTagList } from "@/components/EditableTagList";
 import { ICPVersionHistory } from "@/components/ICPVersionHistory";
 import { PhaseCarousel } from "@/components/PhaseCarousel";
+import { RunStageSummary } from "@/components/RunStageSummary";
+import { ScrapingPanel } from "@/components/ScrapingPanel";
 import { LoadingLine, Spinner } from "@/components/Spinner";
 import { Stage, StageStepper } from "@/components/StageStepper";
+import { ToolCallLogPanel } from "@/components/ToolCallLogPanel";
 import { ApiError, ICPCriteria, RunOut, UpdateIcpBody, api, getSession } from "@/lib/api-client";
 
 const HARD_MAX_LEADS = 25;
@@ -114,44 +119,30 @@ function CardSection({
   );
 }
 
-function ComingSoonPhase({ title, note }: { title: string; note: string }) {
-  return (
-    <div className="space-y-4">
-      <h1 className="text-2xl font-semibold text-foreground">{title}</h1>
-      <div className="rounded-2xl border border-dashed border-surface-border bg-surface-card p-8 text-center">
-        <p className="text-sm text-muted-text">{note}</p>
-      </div>
-    </div>
-  );
-}
-
-const COMING_SOON: Record<string, { title: string; note: string }> = {
-  scraping: {
-    title: "Scraping",
-    note: "Not started yet -- website scraping runs after discovery finds candidate companies.",
-  },
-  qualification: {
-    title: "Qualification",
-    note: "Not started yet -- qualification runs after each candidate is scraped.",
-  },
-  drafting: {
-    title: "Drafting",
-    note: "Not started yet -- outreach drafts are generated for qualified leads.",
-  },
-};
-
 export default function RunDetailPage() {
   const { runId } = useParams<{ runId: string }>();
   const router = useRouter();
   const [run, setRun] = useState<RunOut | null>(null);
   const [leadCount, setLeadCount] = useState(5);
+  const [topUpCount, setTopUpCount] = useState(1);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [runningStage, setRunningStage] = useState<"discovery" | "scraping" | "qualification" | "drafting" | null>(
+    null,
+  );
   const [viewingVersion, setViewingVersion] = useState<number | null>(null);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<DraftICP | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [direction, setDirection] = useState<1 | -1>(1);
+  const [autoContinue, setAutoContinue] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return window.sessionStorage.getItem(`koya_auto_continue_${runId}`) === "1";
+    } catch {
+      return false;
+    }
+  });
 
   useEffect(() => {
     if (!getSession()) {
@@ -167,6 +158,71 @@ export default function RunDetailPage() {
       })
       .catch((err) => setError(err instanceof ApiError ? err.message : "Something went wrong"));
   }, [runId, router]);
+
+  function toggleAutoContinue() {
+    setAutoContinue((prev) => {
+      const next = !prev;
+      try {
+        window.sessionStorage.setItem(`koya_auto_continue_${runId}`, next ? "1" : "0");
+      } catch {
+        // best-effort persistence only
+      }
+      return next;
+    });
+  }
+
+  // A stage's own POST (e.g. handleStartScrape) doesn't resolve until the
+  // whole stage finishes server-side -- for a 12-lead scrape that can be a
+  // minute-plus with zero UI feedback, and a page LOAD/RELOAD mid-stage (a
+  // second tab, or coming back later) sees a live "running" snapshot with
+  // no way to tell it's progressing or to know when it's safe to act again.
+  // Poll while status is "running" so the page reflects real progress and
+  // re-enables controls the moment the backend actually finishes, instead
+  // of sitting frozen on a stale snapshot.
+  useEffect(() => {
+    if (run?.status !== "running") return;
+    const interval = setInterval(() => {
+      api.getRun(runId).then(setRun).catch(() => {});
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [run?.status, runId]);
+
+  // Opt-in (off by default -- each stage below spends real Apify/Firecrawl/
+  // Claude budget, and every other trigger in this app is deliberately
+  // manual for exactly that reason). When on, fires the next stage the
+  // instant this run has something ready for it and nothing else is in
+  // flight -- reusing each canStart* condition's own logic rather than the
+  // later-declared consts, since those are computed after the early
+  // returns below and hooks can't follow a conditional return.
+  useEffect(() => {
+    if (!autoContinue || busy || error || !run || !run.icp) return;
+
+    if (run.status === "queued") {
+      handleStartDiscovery();
+      return;
+    }
+    if (run.status === "running") return;
+
+    const discoveredCount = run.leads.filter((l) => l.qualification_status === "discovered" && !l.is_buffer).length;
+    if (discoveredCount > 0) {
+      handleStartScrape();
+      return;
+    }
+
+    const scrapedCount = run.leads.filter((l) => l.qualification_status === "scraped" && !l.is_buffer).length;
+    if (scrapedCount > 0) {
+      handleStartQualify();
+      return;
+    }
+
+    const undraftedQualifiedCount = run.leads.filter(
+      (l) => !l.is_buffer && l.qualification_status === "qualified" && l.drafts.length === 0,
+    ).length;
+    if (undraftedQualifiedCount > 0) {
+      handleStartDraft();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoContinue, busy, error, run]);
 
   function navigateTo(index: number) {
     if (index === activeIndex) return;
@@ -191,9 +247,107 @@ export default function RunDetailPage() {
 
   async function handleStartDiscovery() {
     setBusy(true);
+    setRunningStage("discovery");
     setError(null);
     try {
       const updated = await api.startRun(runId);
+      setRun(updated);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Something went wrong");
+    } finally {
+      setBusy(false);
+      setRunningStage(null);
+    }
+  }
+
+  async function handleStartScrape() {
+    setBusy(true);
+    setRunningStage("scraping");
+    setError(null);
+    try {
+      const updated = await api.startScrape(runId);
+      setRun(updated);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Something went wrong");
+    } finally {
+      setBusy(false);
+      setRunningStage(null);
+    }
+  }
+
+  async function handleTopUpDiscovery() {
+    setBusy(true);
+    setRunningStage("discovery");
+    setError(null);
+    try {
+      const updated = await api.topUpDiscovery(runId, topUpCount);
+      setRun(updated);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Something went wrong");
+    } finally {
+      setBusy(false);
+      setRunningStage(null);
+    }
+  }
+
+  async function handleUseBuffer(count: number) {
+    setBusy(true);
+    setRunningStage("scraping");
+    setError(null);
+    try {
+      const updated = await api.useDiscoveryBuffer(runId, count);
+      setRun(updated);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Something went wrong");
+    } finally {
+      setBusy(false);
+      setRunningStage(null);
+    }
+  }
+
+  async function handleStartQualify() {
+    setBusy(true);
+    setRunningStage("qualification");
+    setError(null);
+    try {
+      const updated = await api.startQualify(runId);
+      setRun(updated);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Something went wrong");
+    } finally {
+      setBusy(false);
+      setRunningStage(null);
+    }
+  }
+
+  async function handleStartDraft() {
+    setBusy(true);
+    setRunningStage("drafting");
+    setError(null);
+    try {
+      const updated = await api.startDraft(runId);
+      setRun(updated);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Something went wrong");
+    } finally {
+      setBusy(false);
+      setRunningStage(null);
+    }
+  }
+
+  async function handleResetRun() {
+    if (
+      !window.confirm(
+        "Force reset this run's status? Only do this if it's genuinely stuck (not actually still working) -- " +
+          "resetting a run that's truly still in progress can let two stages run at once.",
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await api.resetRun(runId);
       setRun(updated);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Something went wrong");
@@ -266,17 +420,82 @@ export default function RunDetailPage() {
   const canEdit = isViewingCurrent && !icpConfirmed;
   const icp = editing && draft ? draft : viewedIcp;
 
+  const hasDiscoveredLeads = run.leads.length > 0;
+  const hasScrapedLeads = run.leads.some((l) => l.sources.length > 0);
+  const discoveryDone = icpConfirmed && hasDiscoveredLeads && run.status !== "running";
+  // Buffer/spare leads (Lead.is_buffer) aren't scrapeable yet -- they're
+  // promoted into the primary pool via "use spare candidates" first.
+  const discoveredLeadCount = run.leads.filter((l) => l.qualification_status === "discovered" && !l.is_buffer).length;
+  const spareBufferCount = run.leads.filter((l) => l.qualification_status === "discovered" && l.is_buffer).length;
+  const canStartScrape = discoveredLeadCount > 0 && run.status !== "running";
+
+  // This is "did discovery+scraping deliver enough raw candidates into the
+  // pipeline", not "do we have enough final qualified leads" -- qualifying
+  // usually drops a good chunk further (a candidate that scraped fine can
+  // still come back disqualified), which is a separate, likely larger
+  // shortfall the Qualification tab surfaces on its own. A discovery
+  // top-up widens the top of the funnel; it doesn't yet re-trigger itself
+  // off a qualified-count shortfall specifically.
+  const validLeadCount = run.leads.filter((l) => l.qualification_status === "scraped" || l.qualification_status === "qualified").length;
+  const leadShortfall = Math.max(0, (run.lead_count_limit ?? 0) - validLeadCount);
+  const canTopUpDiscovery = icpConfirmed && run.status !== "queued" && run.status !== "running" && leadShortfall > 0;
+
+  const scrapedLeadCount = run.leads.filter((l) => l.qualification_status === "scraped" && !l.is_buffer).length;
+  const canStartQualify = scrapedLeadCount > 0 && run.status !== "running";
+  const hasQualifiedLeads = run.leads.some((l) =>
+    ["qualified", "disqualified", "needs_review"].includes(l.qualification_status),
+  );
+
+  const undraftedQualifiedCount = run.leads.filter(
+    (l) => !l.is_buffer && l.qualification_status === "qualified" && l.drafts.length === 0,
+  ).length;
+  const canStartDraft = undraftedQualifiedCount > 0 && run.status !== "running";
+  const hasDrafts = run.leads.some((l) => l.drafts.length > 0);
+
   const stages: Stage[] = [
     { id: "icp", label: "ICP", status: icpConfirmed ? "completed" : "current" },
-    { id: "discovery", label: "Discovery", status: "upcoming" },
-    { id: "scraping", label: "Scraping", status: "upcoming" },
-    { id: "qualification", label: "Qualification", status: "upcoming" },
-    { id: "drafting", label: "Drafting", status: "upcoming" },
+    {
+      id: "discovery",
+      label: "Discovery",
+      status:
+        runningStage === "discovery" ? "running" : discoveryDone ? "completed" : icpConfirmed ? "current" : "upcoming",
+    },
+    {
+      id: "scraping",
+      label: "Scraping",
+      status:
+        runningStage === "scraping" ? "running" : hasScrapedLeads ? "completed" : discoveryDone ? "current" : "upcoming",
+    },
+    {
+      id: "qualification",
+      label: "Qualification",
+      status:
+        runningStage === "qualification"
+          ? "running"
+          : hasQualifiedLeads
+            ? "completed"
+            : hasScrapedLeads
+              ? "current"
+              : "upcoming",
+    },
+    {
+      id: "drafting",
+      label: "Drafting",
+      status:
+        runningStage === "drafting"
+          ? "running"
+          : hasDrafts
+            ? "completed"
+            : hasQualifiedLeads
+              ? "current"
+              : "upcoming",
+    },
   ];
   const activeStageId = stages[activeIndex].id;
 
   return (
     <AppShell>
+      <ToolCallLogPanel runId={runId} />
       <div className="flex min-h-full flex-col">
         <StageStepper
           stages={stages}
@@ -495,39 +714,75 @@ export default function RunDetailPage() {
 
               {activeStageId === "discovery" && <DiscoveryPanel run={run} />}
 
-              {activeStageId !== "icp" && activeStageId !== "discovery" && (
-                <ComingSoonPhase {...COMING_SOON[activeStageId]} />
-              )}
+              {activeStageId === "scraping" && <ScrapingPanel run={run} />}
+
+              {activeStageId === "qualification" && <QualificationPanel run={run} />}
+
+              {activeStageId === "drafting" && <DraftingPanel run={run} />}
             </PhaseCarousel>
           </div>
         </div>
 
-        {activeStageId === "icp" && (
-          <div className="sticky bottom-0 border-t border-surface-border bg-surface-card px-4 py-4 sm:px-8">
-            <div className="mx-auto flex max-w-3xl flex-wrap items-center justify-between gap-4">
-              <div className="flex items-center gap-3">
-                <label htmlFor="lead-count" className="text-sm font-medium text-foreground">
-                  Lead count
-                </label>
-                <input
-                  id="lead-count"
-                  type="number"
-                  min={1}
-                  max={HARD_MAX_LEADS}
-                  value={leadCount}
-                  disabled={icpConfirmed}
-                  onChange={(e) => setLeadCount(Math.min(HARD_MAX_LEADS, Number(e.target.value)))}
-                  className="w-20 rounded-lg border border-surface-border bg-background px-2 py-1.5 text-sm text-foreground outline-none transition-colors focus:border-primary-accent disabled:opacity-60"
-                />
-                <span className="text-xs text-muted-text">max {HARD_MAX_LEADS}</span>
-              </div>
+        <div className="sticky bottom-0 border-t border-surface-border bg-surface-card px-4 py-4 sm:px-8">
+          <div className="mx-auto max-w-3xl space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <RunStageSummary run={run} />
+              <button
+                type="button"
+                onClick={toggleAutoContinue}
+                title="When on, each stage automatically starts the next one as soon as it has work ready -- spends budget without a click in between."
+                className="flex shrink-0 items-center gap-2 text-xs font-medium text-muted-text"
+              >
+                Auto-continue
+                <span
+                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                    autoContinue ? "bg-primary-accent" : "bg-surface-border"
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+                      autoContinue ? "translate-x-[18px]" : "translate-x-[3px]"
+                    }`}
+                  />
+                </span>
+              </button>
+            </div>
 
-              <div className="flex items-center gap-4">
-                {run.total_claude_cost_usd > 0 && (
-                  <span className="text-xs text-muted-text">
-                    Est. Claude spend: ${run.total_claude_cost_usd.toFixed(4)}
-                  </span>
-                )}
+            {run.status === "running" && !busy && (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+                <p className="text-xs text-amber-900">
+                  This run shows as running, but nothing here is waiting on it -- it may be stuck, or still running
+                  from another tab or an earlier action.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleResetRun}
+                  className="shrink-0 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium text-amber-900 transition-colors hover:bg-amber-100"
+                >
+                  Force reset
+                </button>
+              </div>
+            )}
+
+            {activeStageId === "icp" && (
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <label htmlFor="lead-count" className="text-sm font-medium text-foreground">
+                    Lead count
+                  </label>
+                  <input
+                    id="lead-count"
+                    type="number"
+                    min={1}
+                    max={HARD_MAX_LEADS}
+                    value={leadCount}
+                    disabled={icpConfirmed}
+                    onChange={(e) => setLeadCount(Math.min(HARD_MAX_LEADS, Number(e.target.value)))}
+                    className="w-20 rounded-lg border border-surface-border bg-background px-2 py-1.5 text-sm text-foreground outline-none transition-colors focus:border-primary-accent disabled:opacity-60"
+                  />
+                  <span className="text-xs text-muted-text">max {HARD_MAX_LEADS}</span>
+                </div>
+
                 <button
                   onClick={handleConfirm}
                   disabled={busy || icpConfirmed || editing || !isViewingCurrent}
@@ -537,24 +792,122 @@ export default function RunDetailPage() {
                   {icpConfirmed ? "Confirmed" : busy ? "Confirming..." : "Confirm and continue"}
                 </button>
               </div>
-            </div>
-          </div>
-        )}
+            )}
 
-        {activeStageId === "discovery" && run.status === "queued" && (
-          <div className="sticky bottom-0 border-t border-surface-border bg-surface-card px-4 py-4 sm:px-8">
-            <div className="mx-auto flex max-w-3xl items-center justify-end">
-              <button
-                onClick={handleStartDiscovery}
-                disabled={busy}
-                className="glow-primary flex items-center justify-center gap-2 rounded-lg bg-primary-accent px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
-              >
-                {busy && <Spinner className="text-white" />}
-                {busy ? "Searching..." : "Start discovery"}
-              </button>
-            </div>
+            {activeStageId === "discovery" && run.status === "queued" && (
+              <div className="flex items-center justify-end">
+                <button
+                  onClick={handleStartDiscovery}
+                  disabled={busy}
+                  className="glow-primary flex items-center justify-center gap-2 rounded-lg bg-primary-accent px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                >
+                  {busy && <Spinner className="text-white" />}
+                  {busy ? "Searching..." : "Start discovery"}
+                </button>
+              </div>
+            )}
+
+            {activeStageId === "discovery" && canTopUpDiscovery && (
+              <div className="space-y-3">
+                <p className="text-xs text-muted-text">
+                  {validLeadCount} of {run.lead_count_limit} valid so far.{" "}
+                  <button
+                    type="button"
+                    onClick={() => setTopUpCount(leadShortfall)}
+                    className="underline decoration-dotted underline-offset-2 hover:text-foreground"
+                  >
+                    Suggested: {leadShortfall} more
+                  </button>
+                </p>
+
+                {spareBufferCount > 0 && (
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
+                    <p className="text-xs text-emerald-900">
+                      {spareBufferCount} spare candidate{spareBufferCount === 1 ? "" : "s"} already discovered
+                      (no extra Apify spend) -- try these first.
+                    </p>
+                    <button
+                      onClick={() => handleUseBuffer(Math.min(leadShortfall, spareBufferCount))}
+                      disabled={busy}
+                      className="flex shrink-0 items-center justify-center gap-2 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                    >
+                      {busy && <Spinner className="text-white" />}
+                      Use {Math.min(leadShortfall, spareBufferCount)} spare candidate
+                      {Math.min(leadShortfall, spareBufferCount) === 1 ? "" : "s"}
+                    </button>
+                  </div>
+                )}
+
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <p className="text-xs text-muted-text">
+                    Still short? Search for genuinely new candidates instead (uses more Apify budget).
+                  </p>
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="number"
+                      min={1}
+                      value={topUpCount}
+                      onChange={(e) => setTopUpCount(Math.max(1, Number(e.target.value)))}
+                      className="w-16 rounded-lg border border-surface-border bg-background px-2 py-1.5 text-sm text-foreground outline-none transition-colors focus:border-primary-accent"
+                    />
+                    <button
+                      onClick={handleTopUpDiscovery}
+                      disabled={busy}
+                      className="glow-primary flex items-center justify-center gap-2 rounded-lg bg-primary-accent px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                    >
+                      {busy && <Spinner className="text-white" />}
+                      {busy ? "Searching..." : `Get ${topUpCount} more candidate${topUpCount === 1 ? "" : "s"}`}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activeStageId === "scraping" && canStartScrape && (
+              <div className="flex items-center justify-end">
+                <button
+                  onClick={handleStartScrape}
+                  disabled={busy}
+                  className="glow-primary flex items-center justify-center gap-2 rounded-lg bg-primary-accent px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                >
+                  {busy
+                    ? "Scraping..."
+                    : `Scrape ${discoveredLeadCount} candidate site${discoveredLeadCount === 1 ? "" : "s"}`}
+                </button>
+              </div>
+            )}
+
+            {activeStageId === "qualification" && canStartQualify && (
+              <div className="flex items-center justify-end">
+                <button
+                  onClick={handleStartQualify}
+                  disabled={busy}
+                  className="glow-primary flex items-center justify-center gap-2 rounded-lg bg-primary-accent px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                >
+                  {busy && <Spinner className="text-white" />}
+                  {busy
+                    ? "Qualifying..."
+                    : `Qualify ${scrapedLeadCount} candidate${scrapedLeadCount === 1 ? "" : "s"}`}
+                </button>
+              </div>
+            )}
+
+            {activeStageId === "drafting" && canStartDraft && (
+              <div className="flex items-center justify-end">
+                <button
+                  onClick={handleStartDraft}
+                  disabled={busy}
+                  className="glow-primary flex items-center justify-center gap-2 rounded-lg bg-primary-accent px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                >
+                  {busy && <Spinner className="text-white" />}
+                  {busy
+                    ? "Drafting..."
+                    : `Draft outreach for ${undraftedQualifiedCount} lead${undraftedQualifiedCount === 1 ? "" : "s"}`}
+                </button>
+              </div>
+            )}
           </div>
-        )}
+        </div>
       </div>
     </AppShell>
   );
