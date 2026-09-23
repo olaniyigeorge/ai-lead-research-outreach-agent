@@ -1,11 +1,33 @@
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field, model_validator
 
 
 class RequestOtpBody(BaseModel):
     email: EmailStr
+
+
+class CreateAccessRequestBody(BaseModel):
+    email: EmailStr
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+class AccessRequestOut(BaseModel):
+    id: uuid.UUID
+    email: str
+    reason: str | None
+    status: str
+    created_at: datetime
+    decided_at: datetime | None
+    decided_by_email: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class DecideAccessRequestBody(BaseModel):
+    decision: Literal["granted", "rejected"]
 
 
 class MeOut(BaseModel):
@@ -21,8 +43,17 @@ class AllowedActorOut(BaseModel):
     is_admin: bool
     expires_at: datetime | None
     created_at: datetime
+    last_login_at: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+
+class OrgUsageEntryOut(BaseModel):
+    supabase_user_id: uuid.UUID
+    email: str | None
+    run_count: int
+    qualified_lead_count: int
+    total_spend_usd: float
 
 
 class CreateAllowedActorBody(BaseModel):
@@ -81,6 +112,32 @@ class RunSummaryOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class LeadSourceOut(BaseModel):
+    id: uuid.UUID
+    lead_id: uuid.UUID
+    url: str
+    page_type: str
+    http_status: int | None
+    content_summary: str | None
+    truncated: bool
+    fetched_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class DraftOut(BaseModel):
+    id: uuid.UUID
+    lead_id: uuid.UUID
+    channel: str
+    subject: str | None
+    body: str
+    personalization_note: str | None
+    cited_source_ids: list[str]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class LeadOut(BaseModel):
     id: uuid.UUID
     company_name: str
@@ -88,6 +145,14 @@ class LeadOut(BaseModel):
     qualification_status: str
     source_raw: dict
     created_at: datetime
+    is_buffer: bool
+    confidence_score: float | None
+    fit_reasons: list[str]
+    concerns: list[str]
+    missing_information: list[str]
+    sources: list[LeadSourceOut] = []
+    drafts: list[DraftOut] = []
+    last_error: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -105,6 +170,13 @@ class ToolCallLogOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ExternalUsageOut(BaseModel):
+    stage: str
+    source: str
+    units: int
+    estimated_cost_usd: float | None
+
+
 class RunOut(BaseModel):
     id: uuid.UUID
     objective: str
@@ -113,13 +185,25 @@ class RunOut(BaseModel):
     icp: ICPCriteriaOut | None = None
     icp_versions: list[ICPCriteriaOut] = []
     leads: list[LeadOut] = []
-    total_claude_cost_usd: float
+    total_run_cost_usd: float
+    claude_cost_by_stage: dict[str, float] = {}
+    external_usage: list[ExternalUsageOut] = []
 
     model_config = {"from_attributes": True}
 
 
 class SelectICPVersionBody(BaseModel):
     version: int = Field(ge=1)
+
+
+class TopUpDiscoveryBody(BaseModel):
+    # No upper Field bound -- server-side clamps to the hard cap (see
+    # discovery_service.top_up_run), same pattern as UpdateICPBody.lead_count.
+    additional_count: int = Field(ge=1)
+
+
+class UseBufferBody(BaseModel):
+    count: int = Field(ge=1)
 
 
 class UpdateICPBody(BaseModel):
