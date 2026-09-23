@@ -72,6 +72,17 @@ class Lead(Base):
     company_domain: Mapped[str] = mapped_column(Text, nullable=False)
     qualification_status: Mapped[str] = mapped_column(String, nullable=False, default="discovered")
     source_raw: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    confidence_score: Mapped[float | None] = mapped_column(Numeric(4, 3))
+    fit_reasons: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    concerns: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    missing_information: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    # True for spare candidates discovered beyond `lead_count_limit` in the
+    # initial discovery call's buffer (see discovery_service's buffer
+    # constants) -- excluded from scraping until promoted, so a run doesn't
+    # spend Firecrawl/Claude scraping spares it may never need. Leads
+    # created by a manual top-up are never buffer leads (top-up is already a
+    # deliberate, sized request, not speculative).
+    is_buffer: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
@@ -80,7 +91,52 @@ class Lead(Base):
             "qualification_status in ('discovered','scraped','qualified','disqualified','needs_review','error')",
             name="ck_leads_qualification_status",
         ),
+        CheckConstraint("confidence_score between 0 and 1", name="ck_leads_confidence_score"),
         UniqueConstraint("run_id", "company_domain", name="uq_leads_run_domain"),
+    )
+
+
+class LeadSource(Base):
+    __tablename__ = "lead_sources"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    lead_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("leads.id", ondelete="CASCADE"), nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    page_type: Mapped[str] = mapped_column(String, nullable=False, default="home")
+    fetched_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    http_status: Mapped[int | None] = mapped_column(Integer)
+    content_summary: Mapped[str | None] = mapped_column(Text)
+    content_hash: Mapped[str | None] = mapped_column(Text)
+    truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "page_type in ('home','about','careers','product','other')",
+            name="ck_lead_sources_page_type",
+        ),
+    )
+
+
+class OutreachDraft(Base):
+    __tablename__ = "outreach_drafts"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    lead_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("leads.id", ondelete="CASCADE"), nullable=False)
+    channel: Mapped[str] = mapped_column(String, nullable=False)
+    subject: Mapped[str | None] = mapped_column(Text)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    personalization_note: Mapped[str | None] = mapped_column(Text)
+    # lead_sources.id values backing this draft's factual claims -- JSONB
+    # array of strings, matching every other array-ish column in this schema
+    # (fit_reasons, hard_filters, ...) rather than a native uuid[].
+    cited_source_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint(
+            "channel in ('email_1','email_2','email_3','linkedin')",
+            name="ck_outreach_drafts_channel",
+        ),
     )
 
 
@@ -107,6 +163,22 @@ class ToolCallLog(Base):
     )
 
 
+class AccessRequest(Base):
+    __tablename__ = "access_requests"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    decided_at: Mapped[datetime | None] = mapped_column()
+    decided_by_email: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (
+        CheckConstraint("status in ('pending','granted','rejected')", name="ck_access_requests_status"),
+    )
+
+
 class AllowedActor(Base):
     __tablename__ = "allowed_actors"
 
@@ -125,13 +197,22 @@ class UsageRecord(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
     stage: Mapped[str] = mapped_column(Text, nullable=False)
+    # 'claude' rows carry model/token fields; 'apify' and 'firecrawl' rows
+    # carry `units` instead (result count / scrape count) since neither is
+    # metered in Claude tokens -- see agent/usage.py's record_external_usage.
+    source: Mapped[str] = mapped_column(String, nullable=False, default="claude")
     model: Mapped[str | None] = mapped_column(Text)
     input_tokens: Mapped[int | None] = mapped_column(Integer)
     output_tokens: Mapped[int | None] = mapped_column(Integer)
     cache_read_tokens: Mapped[int | None] = mapped_column(Integer)
     cache_creation_tokens: Mapped[int | None] = mapped_column(Integer)
     estimated_cost_usd: Mapped[float | None] = mapped_column(Numeric(10, 6))
+    units: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint("source in ('claude','apify','firecrawl')", name="ck_usage_records_source"),
+    )
 
 
 class ObjectiveRejection(Base):
