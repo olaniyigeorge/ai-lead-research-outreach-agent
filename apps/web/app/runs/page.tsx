@@ -72,7 +72,7 @@ export default function RunsPage() {
       <div className="animate-fade-in-up mx-auto max-w-4xl px-4 py-10">
         <h1 className="text-2xl font-semibold text-foreground">My runs</h1>
 
-        <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <input
             type="text"
             value={search}
@@ -80,7 +80,7 @@ export default function RunsPage() {
             placeholder="Search by objective..."
             className="w-full max-w-xs rounded-lg border border-surface-border bg-background px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-primary-accent"
           />
-          <div className="flex flex-wrap items-center gap-1">
+          <div className="flex flex-wrap items-center md:justify-end gap-1">
             {QUICK_FILTERS.map((f) => {
               const count = statusCounts[f.id] ?? 0;
               const selected = statusFilter === f.id;
@@ -88,7 +88,7 @@ export default function RunsPage() {
                 <button
                   key={f.id}
                   onClick={() => setStatusFilter(f.id)}
-                  className={`flex items-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                  className={`flex items-center gap-1.5 whitespace-nowrap rounded-lg px-2 py-1 text-xs font-medium transition-colors ${
                     selected
                       ? "border border-primary-accent/30 bg-primary-accent/10 text-primary-accent"
                       : "border border-transparent text-muted-text hover:bg-surface-card-hover hover:text-foreground"
@@ -124,8 +124,8 @@ export default function RunsPage() {
             </Link>
           </div>
         ) : (
-          <div className="glow-card mt-6 overflow-hidden rounded-2xl border border-surface-border bg-surface-card">
-            <table className="w-full border-collapse text-left text-sm">
+          <div className="glow-card mt-6 overflow-x-auto rounded-2xl border border-surface-border bg-surface-card">
+            <table className="w-full min-w-[560px] border-collapse text-left text-sm">
               <thead>
                 <tr className="border-b border-surface-border bg-surface-base text-xs font-semibold uppercase tracking-wide text-muted-text">
                   <th className="px-6 py-3">Objective</th>
