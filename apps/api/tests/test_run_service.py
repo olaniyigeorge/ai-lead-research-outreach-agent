@@ -7,12 +7,14 @@ from claude_agent_sdk import ResultMessage
 
 from apps.api.agent.stages.icp import ICPRefinementResult
 from apps.api.agent.stages.sanity_check import SanityCheckResult
-from apps.api.db.models import Run, UsageRecord
+from apps.api.db.models import Lead, Run, UsageRecord
 from apps.api.services.run_service import (
     create_run,
+    external_usage_by_stage,
     latest_icp,
     list_icp_versions,
     list_runs,
+    reset_stuck_run,
     select_icp_version,
     selected_icp,
     update_icp,
@@ -246,3 +248,67 @@ async def test_list_runs_returns_only_own_runs_newest_first(db_session):
     runs = list_runs(db_session, USER_ID)
 
     assert [r.id for r in runs] == [run_b.id, run_a.id]
+
+
+@pytest.mark.asyncio
+async def test_reset_stuck_run_rejects_when_not_running(db_session):
+    with _mocked_agents():
+        run = await create_run(db_session, USER_ID, "Find some SaaS companies please")
+
+    with pytest.raises(Exception) as exc_info:
+        reset_stuck_run(db_session, run)
+
+    assert getattr(exc_info.value, "status_code", None) == 409
+
+
+@pytest.mark.asyncio
+async def test_reset_stuck_run_goes_to_queued_with_no_leads(db_session):
+    with _mocked_agents():
+        run = await create_run(db_session, USER_ID, "Find some SaaS companies please")
+    update_icp(db_session, run, lead_count=10, confirm=True, overrides={})
+    run.status = "running"  # simulate a discovery call that died mid-flight
+    db_session.commit()
+
+    updated = reset_stuck_run(db_session, run)
+
+    assert updated.status == "queued"
+
+
+@pytest.mark.asyncio
+async def test_reset_stuck_run_goes_to_partially_completed_with_leads(db_session):
+    with _mocked_agents():
+        run = await create_run(db_session, USER_ID, "Find some SaaS companies please")
+    update_icp(db_session, run, lead_count=10, confirm=True, overrides={})
+    db_session.add(Lead(run_id=run.id, company_name="Acme", company_domain="acme.com"))
+    db_session.commit()
+    run.status = "running"  # simulate a scraping call that died mid-flight
+    db_session.commit()
+
+    updated = reset_stuck_run(db_session, run)
+
+    assert updated.status == "partially_completed"
+
+
+@pytest.mark.asyncio
+async def test_external_usage_by_stage_groups_by_stage_and_source_excluding_claude(db_session):
+    with _mocked_agents():
+        run = await create_run(db_session, USER_ID, "Find some SaaS companies please")
+
+    db_session.add_all(
+        [
+            UsageRecord(run_id=run.id, stage="discovery", source="apify", units=8, estimated_cost_usd=0.048),
+            UsageRecord(run_id=run.id, stage="discovery", source="apify", units=2, estimated_cost_usd=0.012),
+            UsageRecord(run_id=run.id, stage="scraping", source="firecrawl", units=1, estimated_cost_usd=None),
+            UsageRecord(run_id=run.id, stage="scraping", source="firecrawl", units=1, estimated_cost_usd=None),
+            UsageRecord(run_id=run.id, stage="icp", source="claude", estimated_cost_usd=0.05),
+        ]
+    )
+    db_session.commit()
+
+    rows = {(r["stage"], r["source"]): r for r in external_usage_by_stage(db_session, run.id)}
+
+    assert rows[("discovery", "apify")]["units"] == 10
+    assert rows[("discovery", "apify")]["estimated_cost_usd"] == pytest.approx(0.06)
+    assert rows[("scraping", "firecrawl")]["units"] == 2
+    assert rows[("scraping", "firecrawl")]["estimated_cost_usd"] is None
+    assert ("icp", "claude") not in rows

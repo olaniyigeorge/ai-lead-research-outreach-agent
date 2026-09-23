@@ -41,7 +41,10 @@ def db_session():
     finally:
         session.rollback()
         session.execute(
-            text("truncate table icp_criteria, runs, app_sessions, allowed_actors, objective_rejections cascade")
+            text(
+                "truncate table icp_criteria, runs, app_sessions, allowed_actors, "
+                "objective_rejections, access_requests cascade"
+            )
         )
         session.execute(
             text(
