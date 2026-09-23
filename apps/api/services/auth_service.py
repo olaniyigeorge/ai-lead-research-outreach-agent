@@ -41,11 +41,15 @@ def verify_otp_for_email(db: Session, email: str, token: str) -> dict:
         # decode_supabase_jwt() is written for the request-auth path (a bad
         # token there is the caller's fault -> 401); here we're verifying a
         # token Supabase itself just issued, so a decode failure is ours.
-        # decode_supabase_jwt() already logs the underlying PyJWTError --
-        # this just records that it happened during the just-issued-token
-        # path specifically, since that's a backend bug, not a bad client.
-        logger.error("Failed to decode a token Supabase itself just issued for %s", normalized)
-        raise HTTPException(status_code=502, detail="Could not verify the issued Supabase token") from exc
+        # decode_supabase_jwt() already logs the underlying PyJWTError and
+        # retries transient JWKS-fetch failures itself -- forward its actual
+        # status/detail (e.g. 503 "please try again" for a network blip)
+        # rather than flattening every cause into one generic 502, which
+        # only told the user to do the exact same thing that had just failed.
+        logger.error(
+            "Failed to decode a token Supabase itself just issued for %s: %s", normalized, exc.detail
+        )
+        raise
 
     supabase_user_id = uuid.UUID(payload["sub"])
     session = start_session(db, supabase_user_id, normalized)
