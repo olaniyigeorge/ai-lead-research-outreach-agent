@@ -15,14 +15,59 @@ enrichment via harvestapi/linkedin-company, per the same doc section), not
 part of company discovery.
 """
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Protocol
 
 import httpx
 
+logger = logging.getLogger(__name__)
+
 APIFY_API_BASE = "https://api.apify.com/v2"
 DISCOVERY_ACTOR_ID = "ecommerce_leads~premium-enriched-b2b-leads"
+_ACTOR_INFO_URL = f"{APIFY_API_BASE}/acts/{DISCOVERY_ACTOR_ID}"
+_CHARGE_EVENT = "apify-default-dataset-item"  # one charge per row in the output dataset
+
+# Fallback if the live pricing lookup below fails -- last-verified against a
+# real 2-item run on 2026-09-22 ($0.012 for 2 companies), matching the
+# FREE-tier price for this event at the time. An inferred cost estimate
+# should never block a discovery run that would otherwise succeed, so this
+# is a "good enough" number, not the source of truth (Apify's own
+# `usageTotalUsd`/`maxTotalChargeUsd` on the run itself is that).
+_FALLBACK_PRICE_PER_RESULT_USD = 0.006
+
+_cached_price_per_result_usd: float | None = None
+
+
+async def get_price_per_result_usd() -> float:
+    """Infers this actor's per-result cost from its own published pricing
+    (`GET /v2/acts/{actorId}`, a public endpoint -- no API token needed)
+    rather than trusting a number hand-typed into a comment, which goes
+    stale the moment Apify repriced the actor. Reads the FREE-tier price for
+    the per-dataset-row charge event, since this account's actual pricing
+    tier isn't exposed by the endpoint and FREE is the conservative (highest
+    plausible cost) choice. Cached for the life of the process -- this is an
+    estimate shown in the UI, not a billing-critical value, so one lookup
+    per process is enough."""
+    global _cached_price_per_result_usd
+    if _cached_price_per_result_usd is not None:
+        return _cached_price_per_result_usd
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(_ACTOR_INFO_URL)
+        resp.raise_for_status()
+        pricing_infos = resp.json()["data"]["pricingInfos"]
+        events = pricing_infos[0]["pricingPerEvent"]["actorChargeEvents"]
+        event = events.get(_CHARGE_EVENT) or next(iter(events.values()))
+        price = float(event["eventTieredPricingUsd"]["FREE"]["tieredEventPriceUsd"])
+    except Exception:
+        logger.warning("Could not fetch live Apify actor pricing, using last-verified fallback", exc_info=True)
+        price = _FALLBACK_PRICE_PER_RESULT_USD
+
+    _cached_price_per_result_usd = price
+    return price
 
 
 @dataclass(frozen=True)
@@ -101,6 +146,20 @@ def build_actor_input(icp: dict, max_items: int) -> dict:
         "scope": "company",
         "pageSize": "100",
     }
+
+    # A `startPage`/`pageSize=1` scheme was tried here to let a discovery
+    # top-up resume exactly where the last call left off, without re-billing
+    # for already-known results (see git history). Verified wrong against a
+    # real run on 2026-09-22: the actor rejects any `pageSize` other than
+    # "100", "500", or "1000" (400 invalid-input). Since those are all >=4x
+    # this app's 25-lead hard cap, there's no page boundary smaller than our
+    # entire realistic result set to resume from -- true incremental
+    # pagination isn't achievable at this actor's granularity for runs this
+    # small. `top_up_core` (discovery_service.py) instead re-requests the
+    # cumulative total (everything already discovered, plus what's wanted)
+    # from page 1 every time; the dedupe-by-domain check strips the
+    # already-known prefix back out. This does mean Apify bills again for
+    # that prefix on every top-up round -- real, but cheap at ~$0.006/result.
 
     # `searchTerm` ANDs with every other filter below and, empirically (live
     # actor calls during debugging, 2026-09-22), behaves like a phrase match
