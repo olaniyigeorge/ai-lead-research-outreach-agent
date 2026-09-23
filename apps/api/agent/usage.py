@@ -30,6 +30,7 @@ def record_usage(db: Session, run_id: uuid.UUID, stage: str, result: ResultMessa
             UsageRecord(
                 run_id=run_id,
                 stage=stage,
+                source="claude",
                 model=model,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
@@ -42,3 +43,33 @@ def record_usage(db: Session, run_id: uuid.UUID, stage: str, result: ResultMessa
     except Exception:
         db.rollback()
         logger.exception("failed to record usage for run %s stage %s", run_id, stage)
+
+
+def record_external_usage(
+    db: Session,
+    run_id: uuid.UUID,
+    stage: str,
+    source: str,
+    units: int,
+    estimated_cost_usd: float | None = None,
+) -> None:
+    """Same ledger as `record_usage`, for spend that isn't metered in Claude
+    tokens -- Apify discovery runs and Firecrawl scrapes. `units` is a
+    source-specific count (Apify: result rows returned; Firecrawl: scrape
+    requests made, i.e. credits at its documented 1-credit-per-scrape rate).
+    `estimated_cost_usd` is left `None` when a source's cost can't be
+    inferred in dollars (Firecrawl credits vary in $ value by plan)."""
+    try:
+        db.add(
+            UsageRecord(
+                run_id=run_id,
+                stage=stage,
+                source=source,
+                units=units,
+                estimated_cost_usd=estimated_cost_usd,
+            )
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("failed to record %s usage for run %s stage %s", source, run_id, stage)
