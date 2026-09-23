@@ -21,10 +21,21 @@ This is built in milestones, in order:
 - ✅ **Foundations** — auth (Supabase email OTP, allowlisted), Postgres schema, migrations
 - ✅ **ICP vertical slice** — objective in, structured target profile out, human confirmation before anything spends money
 - ✅ **Guardrails** — deterministic + cheap-model gating on submitted objectives, rate limiting, per-call cost tracking, an admin access-management page
-- ⬜ **Discovery** (next) — Apify company search, capped and logged
-- ⬜ **Scraping** — untrusted content isolated from any tool-calling context
-- ⬜ **Qualification** — the first stage where the agent actually gets tools and decides which to call
-- ⬜ **Drafting** — 3-step email sequence + LinkedIn message per qualified lead
+- ✅ **Discovery** — Apify company search, capped and logged, with a speculative buffer + top-up flow for shortfalls
+- ✅ **Scraping** — untrusted content isolated from any tool-calling context (zero-tools Claude call, Haiku)
+- ✅ **Qualification** — real Agent SDK tool-calling (Sonnet): one session per run works through every
+  pending lead via `list_pending_leads` / `save_qualification`, and can call `request_more_candidates`
+  (budget/cap-enforced by the tool, never the model) if it notices a shortfall — see note below
+- ✅ **Drafting** — 3-step email sequence + LinkedIn message per qualified lead (Sonnet, tool-less,
+  cited to scraped evidence), gated by `outbound-copywriting` + `outreach-safety` skills
+
+Every other stage (ICP, sanity check, scraping, drafting) uses a single tool-less, structured-output call, since each
+has exactly one right thing to do with its input every time. Qualification is different: which lead to look
+at, when to stop, and whether to fetch more candidates are real decisions, so it's built as genuine
+tool-calling per the PRD ("the agent should have access to a defined set of tools and should decide which
+tool to use") and the architecture doc's original design (`get_lead_context`/`save_qualification`). See
+`apps/api/agent/tools/qualification_tools.py` for the tools and `apps/api/agent/options.py`'s
+`qualification_session_options()` docstring for the fuller rationale.
 
 Full design rationale lives in [`docs/work/koya_lead_agent_architecture.md`](docs/work/koya_lead_agent_architecture.md).
 The original cohort project brief is in [`docs/provided/PRD.md`](docs/provided/PRD.md).
