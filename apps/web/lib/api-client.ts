@@ -80,6 +80,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   requestOtp: (email: string) => request<void>("/auth/request-otp", { method: "POST", body: JSON.stringify({ email }) }),
+  requestAccess: (email: string, reason: string) =>
+    request<AccessRequestOut>("/auth/request-access", { method: "POST", body: JSON.stringify({ email, reason: reason || undefined }) }),
   verifyOtp: (email: string, token: string) =>
     request<Session>("/auth/verify-otp", { method: "POST", body: JSON.stringify({ email, token }) }),
   createRun: (objective: string) => request<RunOut>("/runs", { method: "POST", body: JSON.stringify({ objective }) }),
@@ -90,12 +92,43 @@ export const api = {
   selectIcpVersion: (runId: string, version: number) =>
     request<RunOut>(`/runs/${runId}/icp/select-version`, { method: "PATCH", body: JSON.stringify({ version }) }),
   startRun: (runId: string) => request<RunOut>(`/runs/${runId}/start`, { method: "POST" }),
+  topUpDiscovery: (runId: string, additionalCount: number) =>
+    request<RunOut>(`/runs/${runId}/discovery/top-up`, {
+      method: "POST",
+      body: JSON.stringify({ additional_count: additionalCount }),
+    }),
+  useDiscoveryBuffer: (runId: string, count: number) =>
+    request<RunOut>(`/runs/${runId}/discovery/use-buffer`, {
+      method: "POST",
+      body: JSON.stringify({ count }),
+    }),
+  startScrape: (runId: string) => request<RunOut>(`/runs/${runId}/scrape`, { method: "POST" }),
+  startQualify: (runId: string) => request<RunOut>(`/runs/${runId}/qualify`, { method: "POST" }),
+  startDraft: (runId: string) => request<RunOut>(`/runs/${runId}/draft`, { method: "POST" }),
+  resetRun: (runId: string) => request<RunOut>(`/runs/${runId}/reset`, { method: "POST" }),
+  listToolCalls: (runId: string) => request<ToolCallLog[]>(`/runs/${runId}/tool-calls`),
   getMe: () => request<Me>("/auth/me"),
   listAllowlist: () => request<AllowedActorOut[]>("/admin/allowlist"),
   createAllowlistEntry: (body: CreateAllowedActorBody) =>
     request<AllowedActorOut>("/admin/allowlist", { method: "POST", body: JSON.stringify(body) }),
   deleteAllowlistEntry: (entryId: string) =>
     request<void>(`/admin/allowlist/${entryId}`, { method: "DELETE" }),
+  listAccessRequests: () => request<AccessRequestOut[]>("/admin/access-requests"),
+  decideAccessRequest: (requestId: string, decision: "granted" | "rejected") =>
+    request<AccessRequestOut>(`/admin/access-requests/${requestId}/decide`, {
+      method: "POST",
+      body: JSON.stringify({ decision }),
+    }),
+};
+
+export type AccessRequestOut = {
+  id: string;
+  email: string;
+  reason: string | null;
+  status: string;
+  created_at: string;
+  decided_at: string | null;
+  decided_by_email: string | null;
 };
 
 export type ICPCriteria = {
@@ -114,6 +147,28 @@ export type ICPCriteria = {
   confirmed: boolean;
 };
 
+export type LeadSource = {
+  id: string;
+  lead_id: string;
+  url: string;
+  page_type: string;
+  http_status: number | null;
+  content_summary: string | null;
+  truncated: boolean;
+  fetched_at: string;
+};
+
+export type Draft = {
+  id: string;
+  lead_id: string;
+  channel: string;
+  subject: string | null;
+  body: string;
+  personalization_note: string | null;
+  cited_source_ids: string[];
+  created_at: string;
+};
+
 export type Lead = {
   id: string;
   company_name: string;
@@ -121,6 +176,14 @@ export type Lead = {
   qualification_status: string;
   source_raw: Record<string, unknown>;
   created_at: string;
+  is_buffer: boolean;
+  confidence_score: number | null;
+  fit_reasons: string[];
+  concerns: string[];
+  missing_information: string[];
+  sources: LeadSource[];
+  drafts: Draft[];
+  last_error: string | null;
 };
 
 export type RunOut = {
@@ -131,7 +194,27 @@ export type RunOut = {
   icp: ICPCriteria | null;
   icp_versions: ICPCriteria[];
   leads: Lead[];
-  total_claude_cost_usd: number;
+  total_run_cost_usd: number;
+  claude_cost_by_stage: Record<string, number>;
+  external_usage: ExternalUsage[];
+};
+
+export type ExternalUsage = {
+  stage: string;
+  source: string;
+  units: number;
+  estimated_cost_usd: number | null;
+};
+
+export type ToolCallLog = {
+  id: string;
+  stage: string;
+  tool_name: string;
+  input_summary: Record<string, unknown> | null;
+  result_summary: Record<string, unknown> | null;
+  status: string;
+  error_message: string | null;
+  created_at: string;
 };
 
 export type RunSummary = {
@@ -169,6 +252,7 @@ export type AllowedActorOut = {
   is_admin: boolean;
   expires_at: string | null;
   created_at: string;
+  last_login_at: string | null;
 };
 
 export type CreateAllowedActorBody = {
